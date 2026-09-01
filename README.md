@@ -17,6 +17,9 @@
 npm install
 npm run dev
 npm test
+npm run build:pages
 ```
+
+推送到 `main` 分支后，GitHub Actions 会自动构建并发布公开的 GitHub Pages 试玩页面。
 
 本项目为“窃符救赵”历史故事的游戏化改编，并非史实复原。场景与角色全部由程序化几何体构成，未复用参考项目的模型、音乐或界面素材。

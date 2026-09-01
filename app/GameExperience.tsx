@@ -72,6 +72,7 @@ interface EunuchAgent {
   config: NpcConfig;
   route: THREE.Vector3[];
   routeIndex: number;
+  routeDirection: 1 | -1;
   suspicion: number;
   state: "patrol" | "suspicious" | "caught" | "distracted";
   speed: number;
@@ -315,6 +316,7 @@ export default function GameExperience() {
     let cameraScale = 1;
     let lastUiUpdate = 0;
     let lastAlertTone = 0;
+    let footstepTravel = 0;
     let audioContext: AudioContext | null = null;
     const keys = new Set<string>();
     const obstacles: Obstacle[] = [];
@@ -333,6 +335,57 @@ export default function GameExperience() {
       osc.connect(amp).connect(audioContext.destination);
       osc.start();
       osc.stop(audioContext.currentTime + duration);
+    };
+
+    const playFootstep = (metalFactor: number, crouching: boolean, running: boolean) => {
+      if (!soundOn) return;
+      audioContext ??= new AudioContext();
+      if (audioContext.state === "suspended") void audioContext.resume();
+
+      const now = audioContext.currentTime;
+      const duration = crouching ? 0.055 : running ? 0.105 : 0.08;
+      const buffer = audioContext.createBuffer(1, Math.ceil(audioContext.sampleRate * duration), audioContext.sampleRate);
+      const samples = buffer.getChannelData(0);
+      for (let index = 0; index < samples.length; index += 1) {
+        const decay = 1 - index / samples.length;
+        samples[index] = (Math.random() * 2 - 1) * decay * decay;
+      }
+
+      const source = audioContext.createBufferSource();
+      const filter = audioContext.createBiquadFilter();
+      const amp = audioContext.createGain();
+      const baseGain = crouching ? 0.012 : running ? 0.055 : 0.03;
+      const metalBoost = 1 + metalFactor * 2.2;
+      source.buffer = buffer;
+      filter.type = "lowpass";
+      filter.frequency.value = crouching ? 380 : running ? 920 : 650;
+      amp.gain.setValueAtTime(baseGain * metalBoost, now);
+      amp.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+      source.connect(filter).connect(amp).connect(audioContext.destination);
+      source.start(now);
+
+      const thud = audioContext.createOscillator();
+      const thudAmp = audioContext.createGain();
+      thud.type = "sine";
+      thud.frequency.setValueAtTime(running ? 88 : 72, now);
+      thud.frequency.exponentialRampToValueAtTime(48, now + duration);
+      thudAmp.gain.setValueAtTime(baseGain * 0.45 * metalBoost, now);
+      thudAmp.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+      thud.connect(thudAmp).connect(audioContext.destination);
+      thud.start(now);
+      thud.stop(now + duration);
+
+      if (metalFactor > 0.08) {
+        const ring = audioContext.createOscillator();
+        const ringAmp = audioContext.createGain();
+        ring.type = "triangle";
+        ring.frequency.value = 480 + metalFactor * 190;
+        ringAmp.gain.setValueAtTime(0.012 * metalFactor, now);
+        ringAmp.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
+        ring.connect(ringAmp).connect(audioContext.destination);
+        ring.start(now);
+        ring.stop(now + 0.12);
+      }
     };
 
     const floorMat = new THREE.MeshStandardMaterial({ color: 0x171818, roughness: 0.92, metalness: 0.02 });
@@ -506,7 +559,7 @@ export default function GameExperience() {
 
     const eunuchConfigs: NpcConfig[] = [
       { id: "eunuch-west", kind: "eunuch", patrolPath: [[-11, 0, -15], [-11, 0, -5], [-7, 0, -5], [-7, 0, -15]], viewDistance: 7.4, viewAngle: 1.18 },
-      { id: "eunuch-east", kind: "eunuch", patrolPath: [[8, 0, -13], [8, 0, -3], [12, 0, -3], [12, 0, -13]], viewDistance: 7.8, viewAngle: 1.16 },
+      { id: "eunuch-east", kind: "eunuch", patrolPath: [[12.8, 0, -13], [12.8, 0, -6], [7, 0, -6], [7, 0, -3], [12.8, 0, -3]], viewDistance: 7.8, viewAngle: 1.16 },
       { id: "eunuch-north", kind: "eunuch", patrolPath: [[-3, 0, 6], [7, 0, 6], [7, 0, 12], [-3, 0, 12]], viewDistance: 7, viewAngle: 1.12 },
     ];
 
@@ -523,6 +576,7 @@ export default function GameExperience() {
         config,
         route,
         routeIndex: 1,
+        routeDirection: 1,
         suspicion: 0,
         state: "patrol",
         speed: 1.55 + index * 0.08,
@@ -552,6 +606,7 @@ export default function GameExperience() {
       eunuchs.forEach((agent) => {
         agent.group.position.copy(agent.route[0]);
         agent.routeIndex = 1;
+        agent.routeDirection = 1;
         agent.suspicion = 0;
         agent.state = agent.config.id === "eunuch-north" && mission.phase !== "reach_ruji" ? "distracted" : "patrol";
       });
@@ -562,6 +617,7 @@ export default function GameExperience() {
       setPlayerAtCheckpoint();
       sleepAlert = 0;
       tallyProgress = 0;
+      footstepTravel = 0;
       noiseProps.forEach((prop) => { prop.triggered = false; });
       resetAgents();
       showBanner(reason, 3.4);
@@ -592,6 +648,12 @@ export default function GameExperience() {
 
     const distanceXZ = (a: THREE.Vector3, b: THREE.Vector3) => Math.hypot(a.x - b.x, a.z - b.z);
     const tallyPosition = new THREE.Vector3(1.2, 0, 30.2);
+
+    const metalProximity = () => {
+      let nearest = distanceXZ(player.position, tallyPosition);
+      for (const prop of noiseProps) nearest = Math.min(nearest, distanceXZ(player.position, prop.position));
+      return THREE.MathUtils.clamp(1 - nearest / 4.5, 0, 1);
+    };
 
     const tryInteract = () => {
       if (dialogue) {
@@ -636,6 +698,16 @@ export default function GameExperience() {
       });
     };
 
+    const npcCollides = (x: number, z: number) => {
+      const radius = 0.46;
+      if (x < -14.45 || x > 14.45 || z < -18.45 || z > 36.45) return true;
+      if (z > 15.2 && (x < -10.45 || x > 10.45)) return true;
+      return obstacles.some((box) => {
+        if (box.active && !box.active()) return false;
+        return Math.abs(x - box.x) < box.hx + radius && Math.abs(z - box.z) < box.hz + radius;
+      });
+    };
+
     const animatePuppet = (puppet: THREE.Group, time: number, moving: boolean, crouching = false) => {
       const rig = puppet.userData.rig as Record<string, THREE.Object3D>;
       const swing = moving ? Math.sin(time * 9) * 0.55 : Math.sin(time * 2) * 0.04;
@@ -652,10 +724,14 @@ export default function GameExperience() {
       const canMove = started && !paused && !dialogue && !ending;
       const input = new THREE.Vector3();
       if (canMove) {
-        if (keys.has("KeyW")) input.z += 1;
-        if (keys.has("KeyS")) input.z -= 1;
-        if (keys.has("KeyA")) input.x -= 1;
-        if (keys.has("KeyD")) input.x += 1;
+        const forwardAxis = Number(keys.has("KeyW")) - Number(keys.has("KeyS"));
+        const strafeAxis = Number(keys.has("KeyD")) - Number(keys.has("KeyA"));
+        const cameraForward = new THREE.Vector3();
+        camera.getWorldDirection(cameraForward);
+        cameraForward.y = 0;
+        cameraForward.normalize();
+        const cameraRight = new THREE.Vector3().crossVectors(cameraForward, new THREE.Vector3(0, 1, 0)).normalize();
+        input.addScaledVector(cameraForward, forwardAxis).addScaledVector(cameraRight, strafeAxis);
       }
       const crouching = keys.has("ControlLeft") || keys.has("ControlRight");
       const running = !crouching && (keys.has("ShiftLeft") || keys.has("ShiftRight"));
@@ -663,14 +739,29 @@ export default function GameExperience() {
       const moving = input.lengthSq() > 0;
       if (moving) {
         input.normalize();
+        const previousX = player.position.x;
+        const previousZ = player.position.z;
         const nextX = player.position.x + input.x * speed * dt;
         const nextZ = player.position.z + input.z * speed * dt;
         if (!playerCollides(nextX, player.position.z)) player.position.x = nextX;
         if (!playerCollides(player.position.x, nextZ)) player.position.z = nextZ;
         player.rotation.y = Math.atan2(input.x, input.z);
-        if (mission.phase === "steal_tally" && player.position.z > 15.4) {
-          emitNoise(crouching ? 0.1 : running ? 0.85 : 0.34, running ? "run" : "walk");
+        const traveled = Math.hypot(player.position.x - previousX, player.position.z - previousZ);
+        if (traveled > 0) {
+          const metalFactor = metalProximity();
+          footstepTravel += traveled;
+          const stepDistance = crouching ? 0.72 : running ? 0.88 : 0.62;
+          if (footstepTravel >= stepDistance) {
+            footstepTravel %= stepDistance;
+            playFootstep(metalFactor, crouching, running);
+          }
         }
+        if (traveled > 0 && mission.phase === "steal_tally" && player.position.z > 15.4) {
+          const metalBoost = 1 + metalProximity() * 1.5;
+          emitNoise((crouching ? 0.1 : running ? 0.85 : 0.34) * metalBoost, running ? "run" : "walk");
+        }
+      } else {
+        footstepTravel = 0;
       }
       animatePuppet(player, time, moving, crouching);
       return { moving, crouching, running };
@@ -691,11 +782,19 @@ export default function GameExperience() {
         const toTarget = target.clone().sub(agent.group.position);
         toTarget.y = 0;
         if (toTarget.length() < 0.22) {
-          agent.routeIndex = (agent.routeIndex + 1) % agent.route.length;
+          agent.routeIndex = (agent.routeIndex + agent.routeDirection + agent.route.length) % agent.route.length;
         } else {
           toTarget.normalize();
-          agent.group.position.addScaledVector(toTarget, agent.speed * dt);
-          agent.group.rotation.y = Math.atan2(toTarget.x, toTarget.z);
+          const nextX = agent.group.position.x + toTarget.x * agent.speed * dt;
+          const nextZ = agent.group.position.z + toTarget.z * agent.speed * dt;
+          if (npcCollides(nextX, nextZ)) {
+            agent.routeDirection = agent.routeDirection === 1 ? -1 : 1;
+            agent.routeIndex = (agent.routeIndex + agent.routeDirection + agent.route.length) % agent.route.length;
+            agent.group.rotation.y += Math.PI;
+          } else {
+            agent.group.position.set(nextX, agent.group.position.y, nextZ);
+            agent.group.rotation.y = Math.atan2(toTarget.x, toTarget.z);
+          }
         }
         animatePuppet(agent.group, time + agent.routeIndex, true);
         agent.cone.position.set(agent.group.position.x, 0.08, agent.group.position.z);
