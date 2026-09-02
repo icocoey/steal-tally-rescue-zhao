@@ -9,13 +9,13 @@ export const metadata: Metadata = {
     title: "窃符救赵 · 魏宫夜行",
     description: "一款皮影木偶风格的 3D 网页潜行冒险游戏。",
     type: "website",
-    images: [{ url: "/og.png", width: 1536, height: 1024, alt: "窃符救赵游戏场景" }],
+    images: [{ url: "/og-v2.png", width: 1536, height: 1024, alt: "窃符救赵 · 魏宫夜行" }],
   },
   twitter: {
     card: "summary_large_image",
     title: "窃符救赵 · 魏宫夜行",
     description: "潜入魏宫，避开内侍，盗取虎符。",
-    images: ["/og.png"],
+    images: ["/og-v2.png"],
   },
 };
 
