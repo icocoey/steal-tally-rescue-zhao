@@ -1,8 +1,13 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+const repositoryName = process.env.GITHUB_REPOSITORY?.split("/")[1];
+const pagesBase = process.env.GITHUB_ACTIONS === "true" && repositoryName
+  ? `/${repositoryName}/`
+  : "/";
+
 export default defineConfig({
-  base: "/steal-tally-rescue-zhao/",
+  base: pagesBase,
   plugins: [react()],
   build: {
     outDir: "dist-pages",

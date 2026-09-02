@@ -2,6 +2,17 @@
 
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
+import {
+  attachCharacterAsset,
+  CHARACTER_ASSETS,
+  createClothPanel,
+  createDetailedPuppet,
+  FlameLight,
+  updateAnimatedCharacter,
+  updateClothPanels,
+  type AnimatedCloth,
+  type CharacterAction,
+} from "./game/visuals";
 
 type MissionPhase =
   | "reach_ruji"
@@ -55,6 +66,7 @@ interface UiState {
   ending: boolean;
   soundOn: boolean;
   quality: "high" | "low";
+  assetProgress: number;
 }
 
 interface Obstacle {
@@ -100,117 +112,13 @@ const INITIAL_UI: UiState = {
   ending: false,
   soundOn: true,
   quality: "high",
+  assetProgress: 0,
 };
 
 const COMMAND_EVENT = "tally-game-command";
 
 function emitCommand(command: string) {
   window.dispatchEvent(new CustomEvent(COMMAND_EVENT, { detail: command }));
-}
-
-function createLabel(text: string, color = "#f3d58a") {
-  const canvas = document.createElement("canvas");
-  canvas.width = 384;
-  canvas.height = 112;
-  const ctx = canvas.getContext("2d")!;
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = "rgba(5, 8, 8, .78)";
-  ctx.roundRect(20, 16, 344, 76, 20);
-  ctx.fill();
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 3;
-  ctx.stroke();
-  ctx.fillStyle = color;
-  ctx.font = "600 34px serif";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(text, 192, 56);
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  const sprite = new THREE.Sprite(
-    new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false }),
-  );
-  sprite.scale.set(3.45, 1, 1);
-  sprite.position.y = 3.7;
-  return sprite;
-}
-
-function createPuppet(
-  main: number,
-  accent: number,
-  label?: string,
-  scale = 1,
-) {
-  const group = new THREE.Group();
-  const mainMat = new THREE.MeshStandardMaterial({
-    color: main,
-    roughness: 0.72,
-    metalness: 0.06,
-    side: THREE.DoubleSide,
-  });
-  const accentMat = new THREE.MeshStandardMaterial({
-    color: accent,
-    roughness: 0.48,
-    metalness: 0.16,
-  });
-  const darkMat = new THREE.MeshStandardMaterial({ color: 0x100d0c, roughness: 0.8 });
-
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(1.05, 1.35, 0.28), mainMat);
-  torso.position.y = 1.55;
-  torso.castShadow = true;
-  group.add(torso);
-
-  const belt = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.18, 0.34), accentMat);
-  belt.position.y = 1.1;
-  belt.castShadow = true;
-  group.add(belt);
-
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.39, 18, 12), mainMat);
-  head.scale.z = 0.55;
-  head.position.y = 2.55;
-  head.castShadow = true;
-  group.add(head);
-
-  const hat = new THREE.Mesh(new THREE.BoxGeometry(0.86, 0.18, 0.42), darkMat);
-  hat.position.y = 2.94;
-  hat.castShadow = true;
-  group.add(hat);
-
-  const leftArm = new THREE.Group();
-  const rightArm = new THREE.Group();
-  const armGeo = new THREE.BoxGeometry(0.25, 1.12, 0.22);
-  const armL = new THREE.Mesh(armGeo, mainMat);
-  const armR = new THREE.Mesh(armGeo, mainMat);
-  armL.position.y = -0.46;
-  armR.position.y = -0.46;
-  leftArm.position.set(-0.68, 2.05, 0);
-  rightArm.position.set(0.68, 2.05, 0);
-  leftArm.add(armL);
-  rightArm.add(armR);
-  group.add(leftArm, rightArm);
-
-  const leftLeg = new THREE.Group();
-  const rightLeg = new THREE.Group();
-  const legGeo = new THREE.BoxGeometry(0.32, 1.08, 0.3);
-  const legL = new THREE.Mesh(legGeo, darkMat);
-  const legR = new THREE.Mesh(legGeo, darkMat);
-  legL.position.y = -0.46;
-  legR.position.y = -0.46;
-  leftLeg.position.set(-0.28, 0.78, 0);
-  rightLeg.position.set(0.28, 0.78, 0);
-  leftLeg.add(legL);
-  rightLeg.add(legR);
-  group.add(leftLeg, rightLeg);
-
-  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.72, 0.82, 0.15, 20), accentMat);
-  base.position.y = 0.1;
-  base.receiveShadow = true;
-  group.add(base);
-
-  if (label) group.add(createLabel(label));
-  group.scale.setScalar(scale);
-  group.userData.rig = { leftArm, rightArm, leftLeg, rightLeg, torso, head };
-  return group;
 }
 
 function createVisionCone(distance: number, angle: number) {
@@ -317,9 +225,12 @@ export default function GameExperience() {
     let lastUiUpdate = 0;
     let lastAlertTone = 0;
     let footstepTravel = 0;
+    let assetProgress = 0;
     let audioContext: AudioContext | null = null;
     const keys = new Set<string>();
     const obstacles: Obstacle[] = [];
+    const clothPanels: AnimatedCloth[] = [];
+    const flameLights: FlameLight[] = [];
     const clock = new THREE.Clock();
 
     const playTone = (frequency: number, duration = 0.1, gain = 0.025, type: OscillatorType = "sine") => {
@@ -473,6 +384,12 @@ export default function GameExperience() {
       ink.position.set(x, 1.32, z);
       ink.rotation.x = Math.PI / 2;
       scene.add(ink);
+      const cloth = createClothPanel(Math.max(w, d) * 0.92, 2.25, 0xb79b70, x * 0.31 + z * 0.17, 0.055);
+      cloth.mesh.position.set(x, 1.38, z);
+      if (d > w) cloth.mesh.rotation.y = Math.PI / 2;
+      else cloth.mesh.position.z -= 0.23;
+      clothPanels.push(cloth);
+      scene.add(cloth.mesh);
       return panel;
     };
     addScreen(-5.5, -12, 8, 0.42);
@@ -483,25 +400,32 @@ export default function GameExperience() {
     addScreen(9.5, 7.2, 0.42, 7.5);
     addScreen(-6, 10.5, 9, 0.42);
 
-    for (const [x, z] of [
+    const curtainLeft = createClothPanel(4.5, 5.2, 0x5c181d, 0.4, 0.2);
+    curtainLeft.mesh.position.set(-12.7, 2.35, 14.55);
+    const curtainRight = createClothPanel(4.5, 5.2, 0x5c181d, 2.1, 0.2);
+    curtainRight.mesh.position.set(12.7, 2.35, 14.55);
+    clothPanels.push(curtainLeft, curtainRight);
+    scene.add(curtainLeft.mesh, curtainRight.mesh);
+
+    for (const [index, [x, z]] of [
       [-12, -15], [12, -15], [-12, 12], [12, 12], [-8, 34], [8, 34],
-    ]) {
+    ].entries()) {
       addBox(x, 1.9, z, 0.75, 3.8, 0.75, edgeMat);
-      const lantern = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.35, 0.45, 0.72, 12),
-        new THREE.MeshStandardMaterial({ color: 0xd0923d, emissive: 0x6b2609, emissiveIntensity: 1.9 }),
-      );
-      lantern.position.set(x, 3.15, z);
-      scene.add(lantern);
-      const light = new THREE.PointLight(0xff9b45, 12, 10, 2);
-      light.position.set(x, 3.1, z);
-      scene.add(light);
+      const flameLight = new FlameLight(new THREE.Vector3(x, 3.15, z), index * 1.731, 11.5);
+      flameLight.setQuality(quality, index);
+      flameLights.push(flameLight);
+      scene.add(flameLight.root);
     }
 
     const bed = addBox(5.5, 0.6, 30.5, 6.4, 1.2, 3.8, woodMat);
     const bedding = addBox(5.5, 1.24, 30.5, 5.8, 0.18, 3.2,
       new THREE.MeshStandardMaterial({ color: 0x6b2020, roughness: 0.78 }), false);
     bed.userData.decor = bedding;
+    const bedDrape = createClothPanel(5.8, 2.7, 0x6b2020, 4.2, 0.15);
+    bedDrape.mesh.rotation.x = -Math.PI / 2;
+    bedDrape.mesh.position.set(5.5, 1.37, 30.5);
+    clothPanels.push(bedDrape);
+    scene.add(bedDrape.mesh);
     const table = addBox(1.2, 0.7, 30.2, 1.8, 1.4, 1.6, woodMat);
     table.userData.role = "tally-table";
 
@@ -536,23 +460,23 @@ export default function GameExperience() {
       obstacles.push({ x, z, hx: 0.55, hz: 0.55, occludes: false });
     }
 
-    const player = createPuppet(0x214a45, 0xc79a45, undefined, 0.78);
+    const player = createDetailedPuppet(CHARACTER_ASSETS.player);
     player.position.set(0, 0, -16);
     player.rotation.y = 0;
     scene.add(player);
 
-    const ruji = createPuppet(0x7d303d, 0xd3a85b, "如姬", 0.86);
+    const ruji = createDetailedPuppet(CHARACTER_ASSETS.ruji, "如姬");
     ruji.position.set(11.5, 0, 11.3);
     ruji.rotation.y = -Math.PI / 2;
     scene.add(ruji);
 
-    const king = createPuppet(0x8d3429, 0xd6aa43, "大王 · 熟睡", 0.9);
+    const king = createDetailedPuppet(CHARACTER_ASSETS.king, "大王 · 熟睡");
     king.position.set(5.5, 1.2, 30.5);
     king.rotation.z = -Math.PI / 2;
     king.rotation.y = Math.PI / 2;
     scene.add(king);
 
-    const general = createPuppet(0x242d34, 0xc09445, "接应将军", 0.9);
+    const general = createDetailedPuppet(CHARACTER_ASSETS.general, "接应将军");
     general.position.set(-12, 0, -15.7);
     general.rotation.y = Math.PI / 2;
     scene.add(general);
@@ -564,7 +488,7 @@ export default function GameExperience() {
     ];
 
     const eunuchs: EunuchAgent[] = eunuchConfigs.map((config, index) => {
-      const puppet = createPuppet(0x24343b, 0x7d9b96, undefined, 0.72);
+      const puppet = createDetailedPuppet(CHARACTER_ASSETS.eunuch);
       const route = config.patrolPath!.map(([x, y, z]) => new THREE.Vector3(x, y, z));
       puppet.position.copy(route[0]);
       scene.add(puppet);
@@ -582,6 +506,29 @@ export default function GameExperience() {
         speed: 1.55 + index * 0.08,
       };
     });
+
+    const characterAssetJobs = [
+      attachCharacterAsset(player, CHARACTER_ASSETS.player),
+      attachCharacterAsset(ruji, CHARACTER_ASSETS.ruji),
+      attachCharacterAsset(king, CHARACTER_ASSETS.king),
+      attachCharacterAsset(general, CHARACTER_ASSETS.general),
+      ...eunuchs.map((agent, index) => attachCharacterAsset(agent.group, {
+        ...CHARACTER_ASSETS.eunuch,
+        id: `eunuch-${index + 1}`,
+        materialVariants: {
+          ...CHARACTER_ASSETS.eunuch.materialVariants,
+          main: [0x24343b, 0x2e3d43, 0x1e3037][index] ?? 0x24343b,
+          accent: [0x7d9b96, 0x8b8d73, 0x667f86][index] ?? 0x7d9b96,
+        },
+      })),
+    ];
+    let completedAssetJobs = 0;
+    for (const job of characterAssetJobs) {
+      void job.finally(() => {
+        completedAssetJobs += 1;
+        assetProgress = completedAssetJobs / characterAssetJobs.length;
+      });
+    }
 
     const updateDoorVisuals = () => {
       mainDoor.visible = !mission.hasInnerToken;
@@ -708,16 +655,28 @@ export default function GameExperience() {
       });
     };
 
-    const animatePuppet = (puppet: THREE.Group, time: number, moving: boolean, crouching = false) => {
+    const animatePuppet = (
+      puppet: THREE.Group,
+      time: number,
+      moving: boolean,
+      crouching = false,
+      delta = 0,
+      running = false,
+      forcedAction?: CharacterAction,
+    ) => {
+      const action: CharacterAction = forcedAction ?? (crouching ? "crouch" : moving ? (running ? "run" : "walk") : "idle");
+      if (updateAnimatedCharacter(puppet, action, delta)) return;
       const rig = puppet.userData.rig as Record<string, THREE.Object3D>;
-      const swing = moving ? Math.sin(time * 9) * 0.55 : Math.sin(time * 2) * 0.04;
+      const swingSpeed = running ? 13 : 9;
+      const swing = moving ? Math.sin(time * swingSpeed) * (running ? 0.72 : 0.55) : Math.sin(time * 2) * 0.04;
       rig.leftArm.rotation.x = swing;
       rig.rightArm.rotation.x = -swing;
       rig.leftLeg.rotation.x = -swing * 0.7;
       rig.rightLeg.rotation.x = swing * 0.7;
       rig.torso.rotation.z = moving ? Math.sin(time * 9) * 0.025 : 0;
       rig.head.rotation.y = Math.sin(time * 1.4) * 0.05;
-      puppet.scale.y = crouching ? 0.64 : THREE.MathUtils.lerp(puppet.scale.y, 0.78, 0.18);
+      const baseScale = puppet.userData.baseScale as number;
+      puppet.scale.y = crouching ? baseScale * 0.72 : THREE.MathUtils.lerp(puppet.scale.y, baseScale, 0.18);
     };
 
     const updatePlayer = (dt: number, time: number) => {
@@ -763,7 +722,7 @@ export default function GameExperience() {
       } else {
         footstepTravel = 0;
       }
-      animatePuppet(player, time, moving, crouching);
+      animatePuppet(player, time, moving, crouching, dt, running);
       return { moving, crouching, running };
     };
 
@@ -796,7 +755,7 @@ export default function GameExperience() {
             agent.group.rotation.y = Math.atan2(toTarget.x, toTarget.z);
           }
         }
-        animatePuppet(agent.group, time + agent.routeIndex, true);
+        animatePuppet(agent.group, time + agent.routeIndex, true, false, dt);
         agent.cone.position.set(agent.group.position.x, 0.08, agent.group.position.z);
         agent.cone.rotation.y = agent.group.rotation.y;
 
@@ -928,6 +887,7 @@ export default function GameExperience() {
         ending,
         soundOn,
         quality,
+        assetProgress,
       });
     };
 
@@ -969,6 +929,7 @@ export default function GameExperience() {
         quality = quality === "high" ? "low" : "high";
         renderer.setPixelRatio(quality === "high" ? Math.min(window.devicePixelRatio, 1.6) : 0.9);
         renderer.shadowMap.enabled = quality === "high";
+        flameLights.forEach((flame, index) => flame.setQuality(quality, index));
       }
       if (command === "restart") {
         mission.phase = "reach_ruji";
@@ -1010,11 +971,11 @@ export default function GameExperience() {
         updatePrompt();
       }
       updateCamera(dt);
-      ruji.position.y = Math.sin(time * 1.5) * 0.035;
-      if (!ending) {
-        const kingRig = king.userData.rig as Record<string, THREE.Object3D>;
-        kingRig.torso.scale.y = 1 + Math.sin(time * 1.4) * 0.025;
-      }
+      animatePuppet(ruji, time, false, false, dt, false, dialogue?.action === "ruji" ? "interact" : "idle");
+      animatePuppet(king, time, false, false, dt, false, "sleep");
+      animatePuppet(general, time, false, false, dt, false, ending ? "handoff" : "idle");
+      updateClothPanels(clothPanels, time, quality);
+      flameLights.forEach((flame) => flame.update(time));
       tallyGroup.rotation.y = Math.sin(time * 1.2) * 0.12;
       renderer.render(scene, camera);
       publishUi(time, maxSuspicion, stance);
@@ -1095,6 +1056,10 @@ export default function GameExperience() {
             <div className="intro-title"><span>窃</span><span>符</span><span>救</span><span>赵</span></div>
             <p className="intro-lead">宫门已闭，邯郸危在旦夕。<br />你是信陵君的门客，今夜只有一件事不可失手。</p>
             <button className="start-button" type="button" onClick={() => emitCommand("start")}><span>入宫</span><small>BEGIN THE MISSION</small></button>
+            <div className="asset-loader" role="status" aria-label="角色模型加载进度">
+              <i style={{ width: `${ui.assetProgress * 100}%` }} />
+              <span>{ui.assetProgress >= 1 ? "宫廷木偶已就位" : `正在布置戏台 ${Math.round(ui.assetProgress * 100)}%`}</span>
+            </div>
             <div className="controls-strip"><span>WASD 移动</span><span>Shift 奔跑</span><span>Ctrl 蹲行</span><span>E 交互</span></div>
             <p className="adaptation">取材于“窃符救赵”的游戏化改编 · 非史实复原</p>
           </div>
